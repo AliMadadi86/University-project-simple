@@ -25,6 +25,8 @@ void game_seed_rng(void) {
 
 void game_clear(Game *g, int size) {
     if (!g) return;
+    if (size < 2) size = 2;
+    if (size > MAX_SIZE) size = MAX_SIZE;
     memset(g, 0, sizeof(*g));
     g->size = size;
     g->mode = MODE_PVP;
@@ -37,6 +39,8 @@ void game_start(Game *g, int size, int walls_per_player, GameMode mode, const ch
     int center_top;
     int center_bottom;
     if (!g) return;
+    if (walls_per_player < 0) walls_per_player = 0;
+    if (!(mode == MODE_PVP || mode == MODE_PVC)) mode = MODE_PVP;
 
     game_clear(g, size);
     g->mode = mode;
@@ -377,6 +381,10 @@ int game_try_ai_turn(Game *g, char *msg, size_t msg_cap) {
     char err[64];
 
     if (!g) return 0;
+    if (g->size <= 1) {
+        snprintf(msg, msg_cap, "Computer has no valid action.");
+        return 0;
+    }
 
     move_count = game_list_moves(g, player, moves, 16);
     if (move_count <= 0 && g->walls_left[player] <= 0) {

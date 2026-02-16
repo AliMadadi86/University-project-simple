@@ -27,6 +27,16 @@ build_simple_msvc.cmd
 simple_main.exe
 ```
 
+Map mode:
+```bat
+simple_main.exe input.txt
+```
+
+Help:
+```bat
+simple_main.exe --help
+```
+
 ## Commands
 - `move r c` or `r c`
 - `wall r c H|V` or `r c H|V`
