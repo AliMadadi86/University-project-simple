@@ -1,459 +1,240 @@
 #include "game.h"
 
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
-/*
- * راهنمای این فایل:
- * - اینجا تمام قوانین واقعی بازی پیاده‌سازی شده‌اند.
- * - UI (گرافیکی/متنی) فقط از این توابع استفاده می‌کند و قانونی اضافه نمی‌کند.
- * - ترتیب کلی:
- *   1) توابع کمکی داخلی (static)
- *   2) توابع board_* برای سطح صفحه
- *   3) توابع game_* برای منطق نوبت و برد
- *   4) منطق جعبهٔ جادویی
- */
-
-/* ساخت یک Coord برای خوانایی بیشتر کد */
-static Coord make_coord(int row, int col) {
-    Coord c;
-    c.row = row;
-    c.col = col;
-    return c;
-}
-
-static int clamp_nonnegative(int v) {
-    if (v < 0) return 0;
-    return v;
-}
-
-static int min_int(int a, int b) {
-    if (a < b) return a;
-    return b;
-}
-
-static void copy_text(char *dst, int cap, const char *src) {
-    if (!dst || cap <= 0 || !src) return;
-    strncpy(dst, src, (size_t)cap - 1);
+static void copy_text(char *dst, size_t cap, const char *src) {
+    if (!dst || cap == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    strncpy(dst, src, cap - 1);
     dst[cap - 1] = '\0';
 }
 
-static int clamp_player_count(int n) {
-    if (n <= 2) return 2;
-    return 4;
-}
-
-/*
- * بررسی رسیدن یک بازیکن به هدف:
- * - در 2 نفره: هدف فقط ردیف بالا/پایین است.
- * - در 4 نفره: بازیکن 3 و 4 هدف ستونی دارند.
- */
-static int goal_reached_for_player(const Board *b, int p, Coord c) {
-    if (b->player_count == 4) {
-        if (p == PLAYER1) return c.row == 0;
-        if (p == PLAYER2) return c.row == b->size - 1;
-        if (p == PLAYER3) return c.col == b->size - 1;
-        if (p == PLAYER4) return c.col == 0;
-        return 0;
-    }
-
-    if (p == PLAYER1) return c.row == 0;
-    if (p == PLAYER2) return c.row == b->size - 1;
-    return 0;
-}
-
-/*
- * BFS عمومی برای اینکه ببینیم یک بازیکن از نقطهٔ فعلی، حداقل یک مسیر تا هدفش دارد یا نه.
- * این تابع پایهٔ «قانون مهم بازی» است: هیچ دیواری نباید همهٔ مسیرها را ببندد.
- */
-static int board_has_path_to_player_goal(const Board *b, Coord start, int player_index) {
-    if (!board_in_range(b, start.row, start.col)) return 0;
-    if (player_index < 0 || player_index >= b->player_count) return 0;
-
-    int visited[BOARD_MAX][BOARD_MAX] = {0};
-    Coord queue[BOARD_MAX * BOARD_MAX];
-    int head = 0;
-    int tail = 0;
-
-    visited[start.row][start.col] = 1;
-    queue[tail++] = start;
-
-    while (head < tail) {
-        Coord cur = queue[head++];
-        if (goal_reached_for_player(b, player_index, cur)) return 1;
-
-        const int dr[4] = {-1, 1, 0, 0};
-        const int dc[4] = {0, 0, -1, 1};
-        for (int i = 0; i < 4; i++) {
-            int nr = cur.row + dr[i];
-            int nc = cur.col + dc[i];
-            if (!board_in_range(b, nr, nc)) continue;
-            if (board_is_blocked(b, cur.row, cur.col, nr, nc)) continue;
-            if (visited[nr][nc]) continue;
-            visited[nr][nc] = 1;
-            queue[tail++] = make_coord(nr, nc);
-        }
-    }
-
-    return 0;
-}
-
-static int is_cell_occupied(const Board *b, int row, int col, int ignore_player) {
-    for (int i = 0; i < b->player_count; i++) {
-        if (i == ignore_player) continue;
-        if (b->players[i].row == row && b->players[i].col == col) return 1;
-    }
-    return 0;
-}
-
-/*
- * ثبت/حذف دیوار در آرایه‌های خام.
- * value=1 یعنی دیوار قرار داده شود، value=0 یعنی دیوار جمع شود.
- */
-static void place_wall_internal(Board *b, int row, int col, WallDir dir, unsigned char value) {
-    if (dir == DIR_H) {
-        b->block_down[row][col] = value;
-        b->block_down[row][col + 1] = value;
-        b->h_wall_at[row][col] = value;
-    } else {
-        b->block_right[row][col] = value;
-        b->block_right[row + 1][col] = value;
-        b->v_wall_at[row][col] = value;
+void game_seed_rng(void) {
+    static int seeded = 0;
+    if (!seeded) {
+        srand((unsigned int)time(NULL));
+        seeded = 1;
     }
 }
 
-/* چیدمان اولیهٔ مهره‌ها بر اساس حالت 2 یا 4 نفره */
-static void setup_initial_positions(GameState *g) {
-    int size = g->board.size;
-    int center_top = (size - 1) / 2;
-    int center_bottom = size / 2;
-
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        g->board.players[i].row = -1;
-        g->board.players[i].col = -1;
-    }
-
-    g->board.players[PLAYER1] = make_coord(size - 1, center_bottom);
-    g->board.players[PLAYER2] = make_coord(0, center_top);
-
-    if (g->board.player_count == 4) {
-        g->board.players[PLAYER3] = make_coord(center_top, 0);
-        g->board.players[PLAYER4] = make_coord(center_bottom, size - 1);
-    }
+void game_clear(Game *g, int size) {
+    if (!g) return;
+    memset(g, 0, sizeof(*g));
+    g->size = size;
+    g->mode = MODE_PVP;
+    g->current_player = 0;
+    copy_text(g->player_name[0], NAME_SIZE, "Player1");
+    copy_text(g->player_name[1], NAME_SIZE, "Player2");
 }
 
-/* پاکسازی کامل صفحه برای شروع بازی جدید */
-void board_init(Board *b, int size) {
-    b->size = size;
-    b->player_count = 2;
+void game_start(Game *g, int size, int walls_per_player, GameMode mode, const char *name1, const char *name2) {
+    int center_top;
+    int center_bottom;
+    if (!g) return;
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        b->players[i].row = -1;
-        b->players[i].col = -1;
-        b->walls_left[i] = 0;
-        b->walls_max[i] = 0;
-    }
+    game_clear(g, size);
+    g->mode = mode;
+    g->walls_left[0] = walls_per_player;
+    g->walls_left[1] = walls_per_player;
+    copy_text(g->player_name[0], NAME_SIZE, name1);
+    copy_text(g->player_name[1], NAME_SIZE, name2);
 
-    memset(b->block_right, 0, sizeof(b->block_right));
-    memset(b->block_down, 0, sizeof(b->block_down));
-    memset(b->h_wall_at, 0, sizeof(b->h_wall_at));
-    memset(b->v_wall_at, 0, sizeof(b->v_wall_at));
+    center_top = (size - 1) / 2;
+    center_bottom = size / 2;
+    g->players[0].row = size - 1;
+    g->players[0].col = center_bottom;
+    g->players[1].row = 0;
+    g->players[1].col = center_top;
 }
 
-/* حذف همهٔ دیوارهای صفحه (برای جادوی remove_all_walls) */
-void board_clear_walls(Board *b) {
-    memset(b->block_right, 0, sizeof(b->block_right));
-    memset(b->block_down, 0, sizeof(b->block_down));
-    memset(b->h_wall_at, 0, sizeof(b->h_wall_at));
-    memset(b->v_wall_at, 0, sizeof(b->v_wall_at));
-}
-
-/* چک محدودهٔ معتبر مختصات */
-int board_in_range(const Board *b, int row, int col) {
-    return row >= 0 && col >= 0 && row < b->size && col < b->size;
-}
-
-/*
- * اعتبارسنجی اولیهٔ دیوار:
- * - جای دیوار داخل محدوده باشد
- * - با دیوار موجود تداخل نداشته باشد
- * - با نوع مخالف (cross) قانون‌شکنی نکند
- */
-int board_can_place_wall(const Board *b, int row, int col, WallDir dir) {
-    if (row < 0 || col < 0 || row >= b->size - 1 || col >= b->size - 1) {
-        return 0;
-    }
-
-    if (dir == DIR_H) {
-        if (b->v_wall_at[row][col]) return 0;
-        if (b->block_down[row][col] || b->block_down[row][col + 1]) return 0;
-        return 1;
-    }
-
-    if (b->h_wall_at[row][col]) return 0;
-    if (b->block_right[row][col] || b->block_right[row + 1][col]) return 0;
+int game_set_player_pos(Game *g, int player, int row, int col) {
+    if (!g) return 0;
+    if (player < 0 || player >= PLAYER_COUNT) return 0;
+    if (!game_in_range(g, row, col)) return 0;
+    if (player == 0 && g->players[1].row == row && g->players[1].col == col) return 0;
+    if (player == 1 && g->players[0].row == row && g->players[0].col == col) return 0;
+    g->players[player].row = row;
+    g->players[player].col = col;
     return 1;
 }
 
-/*
- * تلاش برای قراردادن دیوار:
- * 1) چک اولیهٔ محل
- * 2) قراردادن موقت
- * 3) اگر validate_paths فعال باشد: برای تک‌تک بازیکنان چک می‌کند که هنوز مسیر دارند
- * 4) اگر غیرقانونی شد، rollback
- */
-int board_place_wall(Board *b, int row, int col, WallDir dir, int validate_paths) {
-    if (!board_can_place_wall(b, row, col, dir)) return 0;
-
-    place_wall_internal(b, row, col, dir, 1);
-
-    if (validate_paths) {
-        for (int p = 0; p < b->player_count; p++) {
-            Coord start = b->players[p];
-            if (!board_in_range(b, start.row, start.col)) {
-                place_wall_internal(b, row, col, dir, 0);
-                return 0;
-            }
-            if (!board_has_path_to_player_goal(b, start, p)) {
-                place_wall_internal(b, row, col, dir, 0);
-                return 0;
-            }
-        }
-    }
-
-    return 1;
+int game_in_range(const Game *g, int row, int col) {
+    return g && row >= 0 && col >= 0 && row < g->size && col < g->size;
 }
 
-/*
- * آیا حرکت از خانه A به B با دیوار بسته شده؟
- * فقط برای خانه‌های مجاور معنی دارد.
- */
-int board_is_blocked(const Board *b, int r1, int c1, int r2, int c2) {
-    if (!board_in_range(b, r1, c1) || !board_in_range(b, r2, c2)) return 1;
-
+int game_is_blocked(const Game *g, int r1, int c1, int r2, int c2) {
+    if (!game_in_range(g, r1, c1) || !game_in_range(g, r2, c2)) return 1;
     if (r1 == r2) {
-        if (c2 == c1 + 1) return b->block_right[r1][c1];
-        if (c2 == c1 - 1) return b->block_right[r1][c2];
+        if (c2 == c1 + 1) return g->block_right[r1][c1] != 0;
+        if (c2 == c1 - 1) return g->block_right[r1][c2] != 0;
     }
     if (c1 == c2) {
-        if (r2 == r1 + 1) return b->block_down[r1][c1];
-        if (r2 == r1 - 1) return b->block_down[r2][c1];
+        if (r2 == r1 + 1) return g->block_down[r1][c1] != 0;
+        if (r2 == r1 - 1) return g->block_down[r2][c1] != 0;
     }
     return 1;
 }
 
-/*
- * BFS کلاسیک برای «رسیدن به یک ردیف هدف».
- * این نسخه بیشتر در مسیرهای 2 نفره/سازگاری استفاده می‌شود.
- */
-int board_has_path(const Board *b, Coord start, int goal_row) {
-    if (!board_in_range(b, start.row, start.col)) return 0;
+static int goal_row_for_player(const Game *g, int player) {
+    if (!g) return -1;
+    return (player == 0) ? 0 : (g->size - 1);
+}
 
-    int visited[BOARD_MAX][BOARD_MAX] = {0};
-    Coord queue[BOARD_MAX * BOARD_MAX];
+static int is_cell_occupied(const Game *g, int row, int col, int ignore_player) {
+    int i;
+    for (i = 0; i < PLAYER_COUNT; i++) {
+        if (i == ignore_player) continue;
+        if (g->players[i].row == row && g->players[i].col == col) return 1;
+    }
+    return 0;
+}
+
+static void set_wall(Game *g, int row, int col, WallDir dir, unsigned char value) {
+    if (dir == DIR_H) {
+        g->block_down[row][col] = value;
+        g->block_down[row][col + 1] = value;
+        g->h_wall_at[row][col] = value;
+    } else {
+        g->block_right[row][col] = value;
+        g->block_right[row + 1][col] = value;
+        g->v_wall_at[row][col] = value;
+    }
+}
+
+int game_can_place_wall(const Game *g, int row, int col, WallDir dir) {
+    if (!g) return 0;
+    if (row < 0 || col < 0 || row >= g->size - 1 || col >= g->size - 1) return 0;
+
+    if (dir == DIR_H) {
+        if (g->v_wall_at[row][col]) return 0;
+        if (g->block_down[row][col] || g->block_down[row][col + 1]) return 0;
+        return 1;
+    }
+
+    if (g->h_wall_at[row][col]) return 0;
+    if (g->block_right[row][col] || g->block_right[row + 1][col]) return 0;
+    return 1;
+}
+
+int game_add_wall_from_map(Game *g, int row, int col, WallDir dir) {
+    if (!game_can_place_wall(g, row, col, dir)) return 0;
+    set_wall(g, row, col, dir, 1);
+    return 1;
+}
+
+static int has_path_to_goal(const Game *g, int player) {
+    int visited[MAX_SIZE][MAX_SIZE] = {0};
+    Pos queue[MAX_SIZE * MAX_SIZE];
     int head = 0;
     int tail = 0;
+    int goal = goal_row_for_player(g, player);
+    Pos start = g->players[player];
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+    int i;
+
+    if (!game_in_range(g, start.row, start.col)) return 0;
 
     visited[start.row][start.col] = 1;
     queue[tail++] = start;
 
     while (head < tail) {
-        Coord cur = queue[head++];
-        if (cur.row == goal_row) return 1;
+        Pos cur = queue[head++];
+        if (cur.row == goal) return 1;
 
-        const int dr[4] = {-1, 1, 0, 0};
-        const int dc[4] = {0, 0, -1, 1};
-        for (int i = 0; i < 4; i++) {
+        for (i = 0; i < 4; i++) {
             int nr = cur.row + dr[i];
             int nc = cur.col + dc[i];
-            if (!board_in_range(b, nr, nc)) continue;
-            if (board_is_blocked(b, cur.row, cur.col, nr, nc)) continue;
+            if (!game_in_range(g, nr, nc)) continue;
             if (visited[nr][nc]) continue;
+            if (game_is_blocked(g, cur.row, cur.col, nr, nc)) continue;
             visited[nr][nc] = 1;
-            queue[tail++] = make_coord(nr, nc);
-        }
-    }
-
-    return 0;
-}
-
-/* تبدیل mode به تعداد بازیکن */
-int game_player_count_for_mode(GameMode mode) {
-    if (mode == MODE_PVP4) return 4;
-    return 2;
-}
-
-/* تعداد بازیکن معتبر (fail-safe) */
-int game_player_count(const GameState *g) {
-    if (!g) return 2;
-    return clamp_player_count(g->board.player_count);
-}
-
-/*
- * اعمال mode:
- * - تعداد بازیکن‌ها را تنظیم می‌کند
- * - نوبت را reset می‌کند
- * - دیوارها/بلاک‌ها را برای بازیکن‌های غیرفعال صفر می‌کند
- * - جای مهره‌ها را دوباره می‌چیند
- */
-void game_set_mode(GameState *g, GameMode mode) {
-    if (!g) return;
-
-    int base_walls = g->board.walls_max[0];
-    if (base_walls < 0) base_walls = 0;
-
-    g->mode = mode;
-    g->board.player_count = game_player_count_for_mode(mode);
-    g->current_player = PLAYER1;
-
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        g->blocked_turns[i] = 0;
-        if (i < g->board.player_count) {
-            g->board.walls_max[i] = base_walls;
-            g->board.walls_left[i] = base_walls;
-        } else {
-            g->board.walls_left[i] = 0;
-            g->board.walls_max[i] = 0;
-            g->board.players[i].row = -1;
-            g->board.players[i].col = -1;
-            g->player_name[i][0] = '\0';
-        }
-    }
-
-    setup_initial_positions(g);
-}
-
-/* شروع یک game state از صفر */
-void game_init(GameState *g, int size, int walls_per_player) {
-    board_init(&g->board, size);
-
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        g->player_name[i][0] = '\0';
-        g->blocked_turns[i] = 0;
-        g->board.walls_max[i] = walls_per_player;
-        g->board.walls_left[i] = walls_per_player;
-    }
-
-    game_set_mode(g, MODE_PVP);
-}
-
-/* ست‌کردن نام یک بازیکن خاص */
-void game_set_player_name(GameState *g, int player_index, const char *name) {
-    if (!g) return;
-    if (player_index < 0 || player_index >= MAX_PLAYERS) return;
-    if (!name) return;
-    copy_text(g->player_name[player_index], NAME_MAX, name);
-}
-
-/* سازگاری با API قبلی: فقط اسم بازیکن 1 و 2 */
-void game_set_names(GameState *g, const char *p1, const char *p2) {
-    if (p1) copy_text(g->player_name[0], NAME_MAX, p1);
-    if (p2) copy_text(g->player_name[1], NAME_MAX, p2);
-}
-
-/* انتخاب نوبت بعدی با گردش حلقه‌ای */
-int game_next_player(const GameState *g, int current_player) {
-    int count = game_player_count(g);
-    if (count <= 0) return 0;
-    if (current_player < 0 || current_player >= count) return 0;
-    return (current_player + 1) % count;
-}
-
-/* هدف ردیفی بازیکن (فقط برای 2 نفره) */
-int game_goal_row(PlayerId p, int size) {
-    if (p == PLAYER1) return 0;
-    if (p == PLAYER2) return size - 1;
-    return -1;
-}
-
-/* آیا بازیکن p همین الان برنده شده؟ */
-int game_is_win(const GameState *g, PlayerId p) {
-    int player = (int)p;
-    if (!g) return 0;
-    if (player < 0 || player >= g->board.player_count) return 0;
-    return goal_reached_for_player(&g->board, player, g->board.players[player]);
-}
-
-/* پیدا کردن اولین برندهٔ موجود */
-int game_find_winner(const GameState *g, PlayerId *winner) {
-    int count = game_player_count(g);
-    for (int p = 0; p < count; p++) {
-        if (game_is_win(g, (PlayerId)p)) {
-            if (winner) *winner = (PlayerId)p;
-            return 1;
+            queue[tail].row = nr;
+            queue[tail].col = nc;
+            tail++;
         }
     }
     return 0;
 }
 
-/* چک می‌کند بازیکن p حداقل یک مسیر قانونی تا هدف خود دارد */
-int game_player_has_path(const GameState *g, PlayerId p) {
-    int player = (int)p;
+int game_place_wall(Game *g, int player, int row, int col, WallDir dir, char *err, size_t err_cap) {
     if (!g) return 0;
-    if (player < 0 || player >= g->board.player_count) return 0;
-    return board_has_path_to_player_goal(&g->board, g->board.players[player], player);
-}
+    if (player < 0 || player >= PLAYER_COUNT) return 0;
 
-/*
- * مهم‌ترین تابع قوانین حرکت:
- * - در 4 نفره: عمداً ساده (فقط حرکت یک خانه مستقیم)
- * - در 2 نفره: حرکت عادی + پرش + حرکت قطری کنار حریف
- */
-int game_can_move_to(const GameState *g, PlayerId p, Coord target) {
-    const Board *b = &g->board;
-    int player = (int)p;
-    if (player < 0 || player >= b->player_count) return 0;
-
-    Coord cur = b->players[player];
-    if (!board_in_range(b, target.row, target.col)) return 0;
-    if (is_cell_occupied(b, target.row, target.col, player)) return 0;
-
-    int dr = target.row - cur.row;
-    int dc = target.col - cur.col;
-    int man = abs(dr) + abs(dc);
-
-    if (b->player_count != 2) {
-        if (man != 1) return 0;
-        if (board_is_blocked(b, cur.row, cur.col, target.row, target.col)) return 0;
-        return 1;
+    if (g->walls_left[player] <= 0) {
+        if (err) snprintf(err, err_cap, "No walls left.");
+        return 0;
+    }
+    if (!game_can_place_wall(g, row, col, dir)) {
+        if (err) snprintf(err, err_cap, "Invalid wall position.");
+        return 0;
     }
 
-    int opp_idx = 1 - player;
-    Coord opp = b->players[opp_idx];
+    set_wall(g, row, col, dir, 1);
+    if (!has_path_to_goal(g, 0) || !has_path_to_goal(g, 1)) {
+        set_wall(g, row, col, dir, 0);
+        if (err) snprintf(err, err_cap, "Wall blocks all paths.");
+        return 0;
+    }
 
-    if (target.row == opp.row && target.col == opp.col) return 0;
+    g->walls_left[player]--;
+    return 1;
+}
 
-    int odr = opp.row - cur.row;
-    int odc = opp.col - cur.col;
+int game_can_move(const Game *g, int player, Pos target) {
+    Pos cur;
+    Pos opp;
+    int dr;
+    int dc;
+    int manhattan;
+    int odr;
+    int odc;
     int opp_adjacent = 0;
-    if (abs(odr) + abs(odc) == 1) {
-        if (!board_is_blocked(b, cur.row, cur.col, opp.row, opp.col)) {
-            opp_adjacent = 1;
-        }
-    }
-
-    Coord jump = make_coord(opp.row + odr, opp.col + odc);
+    Pos jump;
     int jump_possible = 0;
-    if (opp_adjacent) {
-        if (board_in_range(b, jump.row, jump.col)) {
-            if (!board_is_blocked(b, opp.row, opp.col, jump.row, jump.col)) {
-                jump_possible = 1;
-            }
-        }
+
+    if (!g) return 0;
+    if (player < 0 || player >= PLAYER_COUNT) return 0;
+    if (!game_in_range(g, target.row, target.col)) return 0;
+    if (is_cell_occupied(g, target.row, target.col, player)) return 0;
+
+    cur = g->players[player];
+    opp = g->players[1 - player];
+    dr = target.row - cur.row;
+    dc = target.col - cur.col;
+    manhattan = abs(dr) + abs(dc);
+
+    odr = opp.row - cur.row;
+    odc = opp.col - cur.col;
+    if (abs(odr) + abs(odc) == 1 && !game_is_blocked(g, cur.row, cur.col, opp.row, opp.col)) {
+        opp_adjacent = 1;
     }
 
-    if (man == 1) {
-        if (board_is_blocked(b, cur.row, cur.col, target.row, target.col)) return 0;
+    jump.row = opp.row + odr;
+    jump.col = opp.col + odc;
+    if (opp_adjacent && game_in_range(g, jump.row, jump.col) &&
+        !game_is_blocked(g, opp.row, opp.col, jump.row, jump.col)) {
+        jump_possible = 1;
+    }
+
+    if (manhattan == 1) {
+        if (game_is_blocked(g, cur.row, cur.col, target.row, target.col)) return 0;
         return 1;
     }
 
-    if (man == 2 && (dr == 0 || dc == 0)) {
-        Coord mid = make_coord(cur.row + dr / 2, cur.col + dc / 2);
+    if (manhattan == 2 && (dr == 0 || dc == 0)) {
+        Pos mid;
+        mid.row = cur.row + dr / 2;
+        mid.col = cur.col + dc / 2;
         if (mid.row != opp.row || mid.col != opp.col) return 0;
-        if (board_is_blocked(b, cur.row, cur.col, mid.row, mid.col)) return 0;
-        if (board_is_blocked(b, mid.row, mid.col, target.row, target.col)) return 0;
+        if (game_is_blocked(g, cur.row, cur.col, mid.row, mid.col)) return 0;
+        if (game_is_blocked(g, mid.row, mid.col, target.row, target.col)) return 0;
         return 1;
     }
 
@@ -469,218 +250,169 @@ int game_can_move_to(const GameState *g, PlayerId p, Coord target) {
             if (abs(target.row - cur.row) != 1) return 0;
         }
 
-        if (board_is_blocked(b, opp.row, opp.col, target.row, target.col)) return 0;
+        if (game_is_blocked(g, opp.row, opp.col, target.row, target.col)) return 0;
         return 1;
     }
 
     return 0;
 }
 
-/*
- * خروجی دادن لیست حرکت‌های مجاز برای بازیکن:
- * - در 4 نفره فقط 4 جهت پایه بررسی می‌شود
- * - در 2 نفره کاندیدهای پرش/قطری هم به لیست کاندید اضافه می‌شود
- */
-int game_list_valid_moves(const GameState *g, PlayerId p, Coord *out, int max_out) {
-    int player = (int)p;
+int game_list_moves(const Game *g, int player, Pos *out, int max_out) {
+    Pos cur;
+    Pos opp;
+    Pos candidates[8];
     int count = 0;
-    Coord cur = g->board.players[player];
+    int candidate_count = 0;
+    int odr;
+    int odc;
+    int i;
 
-    if (g->board.player_count != 2) {
-        Coord candidates[4];
-        candidates[0] = make_coord(cur.row - 1, cur.col);
-        candidates[1] = make_coord(cur.row + 1, cur.col);
-        candidates[2] = make_coord(cur.row, cur.col - 1);
-        candidates[3] = make_coord(cur.row, cur.col + 1);
-        for (int i = 0; i < 4 && count < max_out; i++) {
-            if (game_can_move_to(g, p, candidates[i])) out[count++] = candidates[i];
-        }
-        return count;
-    }
+    if (!g || !out || max_out <= 0) return 0;
+    if (player < 0 || player >= PLAYER_COUNT) return 0;
 
-    Coord opp = g->board.players[1 - player];
-    Coord candidates[8];
-    int cand_count = 0;
+    cur = g->players[player];
+    opp = g->players[1 - player];
 
-    candidates[cand_count++] = make_coord(cur.row - 1, cur.col);
-    candidates[cand_count++] = make_coord(cur.row + 1, cur.col);
-    candidates[cand_count++] = make_coord(cur.row, cur.col - 1);
-    candidates[cand_count++] = make_coord(cur.row, cur.col + 1);
+    candidates[candidate_count++] = (Pos){cur.row - 1, cur.col};
+    candidates[candidate_count++] = (Pos){cur.row + 1, cur.col};
+    candidates[candidate_count++] = (Pos){cur.row, cur.col - 1};
+    candidates[candidate_count++] = (Pos){cur.row, cur.col + 1};
 
-    int odr = opp.row - cur.row;
-    int odc = opp.col - cur.col;
+    odr = opp.row - cur.row;
+    odc = opp.col - cur.col;
     if (abs(odr) + abs(odc) == 1) {
-        candidates[cand_count++] = make_coord(cur.row + 2 * odr, cur.col + 2 * odc);
+        candidates[candidate_count++] = (Pos){cur.row + 2 * odr, cur.col + 2 * odc};
         if (odr != 0) {
-            candidates[cand_count++] = make_coord(cur.row + odr, cur.col - 1);
-            candidates[cand_count++] = make_coord(cur.row + odr, cur.col + 1);
+            candidates[candidate_count++] = (Pos){cur.row + odr, cur.col - 1};
+            candidates[candidate_count++] = (Pos){cur.row + odr, cur.col + 1};
         } else {
-            candidates[cand_count++] = make_coord(cur.row - 1, cur.col + odc);
-            candidates[cand_count++] = make_coord(cur.row + 1, cur.col + odc);
+            candidates[candidate_count++] = (Pos){cur.row - 1, cur.col + odc};
+            candidates[candidate_count++] = (Pos){cur.row + 1, cur.col + odc};
         }
     }
 
-    for (int i = 0; i < cand_count && count < max_out; i++) {
-        if (game_can_move_to(g, p, candidates[i])) out[count++] = candidates[i];
+    for (i = 0; i < candidate_count && count < max_out; i++) {
+        if (game_can_move(g, player, candidates[i])) {
+            out[count++] = candidates[i];
+        }
     }
-
     return count;
 }
 
-/* اعمال حرکت اگر قانونی باشد */
-int game_move_player(GameState *g, PlayerId p, Coord target, char *err, size_t err_cap) {
-    if (!game_can_move_to(g, p, target)) {
-        if (err && err_cap) snprintf(err, err_cap, "Error: invalid move");
+int game_move_player(Game *g, int player, Pos target, char *err, size_t err_cap) {
+    if (!game_can_move(g, player, target)) {
+        if (err) snprintf(err, err_cap, "Invalid move.");
         return 0;
     }
-
-    g->board.players[p] = target;
+    g->players[player] = target;
     return 1;
 }
 
-/* اعمال دیوار اگر قانونی باشد و سهمیهٔ دیوار باقی مانده باشد */
-int game_place_wall(GameState *g, PlayerId p, int row, int col, WallDir dir, char *err, size_t err_cap) {
-    int player = (int)p;
-    if (player < 0 || player >= g->board.player_count) {
-        if (err && err_cap) snprintf(err, err_cap, "Error: invalid player");
-        return 0;
-    }
-
-    if (g->board.walls_left[player] <= 0) {
-        if (err && err_cap) snprintf(err, err_cap, "Error: no walls left");
-        return 0;
-    }
-
-    if (!board_can_place_wall(&g->board, row, col, dir)) {
-        if (err && err_cap) snprintf(err, err_cap, "Error: invalid wall placement");
-        return 0;
-    }
-
-    if (!board_place_wall(&g->board, row, col, dir, 1)) {
-        if (err && err_cap) snprintf(err, err_cap, "Error: wall blocks all paths");
-        return 0;
-    }
-
-    g->board.walls_left[player]--;
-    return 1;
+int game_check_winner(const Game *g) {
+    if (!g) return -1;
+    if (g->players[0].row == 0) return 0;
+    if (g->players[1].row == g->size - 1) return 1;
+    return -1;
 }
 
-/*
- * رول جعبهٔ جادویی:
- * - هدف: یک بازیکن تصادفی از بازیکن‌های فعال
- * - kind: پاداش یا طلسم
- * - type/amount: طبق kind انتخاب می‌شود
- */
-MagicEvent game_roll_magic(const GameState *g) {
-    MagicEvent ev;
-    int count = game_player_count(g);
-
-    ev.target = (PlayerId)(rand() % count);
-    ev.kind = (MagicKind)(rand() % 2);
-    ev.amount = 0;
-
-    if (ev.kind == MAGIC_KIND_TALISMAN) {
-        int pick = rand() % 3;
-        if (pick == 0) {
-            ev.type = MAGIC_CLEAR_WALLS;
-            ev.amount = 0;
-        } else if (pick == 1) {
-            int opts[3] = {2, 3, 5};
-            ev.type = MAGIC_DEC_WALLS;
-            ev.amount = opts[rand() % 3];
-        } else {
-            ev.type = MAGIC_BLOCK_TURNS;
-            ev.amount = (rand() % 2) + 1;
-        }
-    } else {
-        int pick = rand() % 2;
-        if (pick == 0) {
-            int opts[3] = {2, 3, 5};
-            ev.type = MAGIC_INC_WALLS;
-            ev.amount = opts[rand() % 3];
-        } else {
-            ev.type = MAGIC_STEAL_WALLS;
-            ev.amount = (rand() % 2) + 1;
-        }
-    }
-
-    return ev;
+int game_next_player(int current_player) {
+    return (current_player + 1) % PLAYER_COUNT;
 }
 
-/*
- * اعمال اثر جادو روی game state.
- * نکتهٔ مهم steal:
- * - در 2 نفره از حریف می‌دزدد
- * - در 4 نفره از بازیکنی که بیشترین دیوار را دارد می‌گیرد
- */
-void game_apply_magic(GameState *g, MagicEvent ev) {
-    int count = game_player_count(g);
-    int t = (int)ev.target;
-    if (t < 0 || t >= count) return;
+static void clear_all_walls(Game *g) {
+    memset(g->block_right, 0, sizeof(g->block_right));
+    memset(g->block_down, 0, sizeof(g->block_down));
+    memset(g->h_wall_at, 0, sizeof(g->h_wall_at));
+    memset(g->v_wall_at, 0, sizeof(g->v_wall_at));
+}
 
-    switch (ev.type) {
-        case MAGIC_CLEAR_WALLS:
-            board_clear_walls(&g->board);
-            break;
-        case MAGIC_DEC_WALLS:
-            g->board.walls_left[t] = clamp_nonnegative(g->board.walls_left[t] - ev.amount);
-            break;
-        case MAGIC_BLOCK_TURNS:
-            g->blocked_turns[t] += ev.amount;
-            break;
-        case MAGIC_INC_WALLS:
-            g->board.walls_left[t] += ev.amount;
-            break;
-        case MAGIC_STEAL_WALLS: {
-            int donor = -1;
-            int best = -1;
-            for (int i = 0; i < count; i++) {
-                if (i == t) continue;
-                if (g->board.walls_left[i] > best) {
-                    best = g->board.walls_left[i];
-                    donor = i;
-                }
+void game_apply_magic(Game *g, char *msg, size_t msg_cap) {
+    int target;
+    int other;
+    int effect;
+    int amount;
+    if (!g) return;
+
+    target = rand() % PLAYER_COUNT;
+    other = 1 - target;
+    effect = rand() % 5;
+
+    if (effect == 0) {
+        clear_all_walls(g);
+        snprintf(msg, msg_cap, "Magic: all walls removed.");
+        return;
+    }
+    if (effect == 1) {
+        amount = (rand() % 2) ? 2 : 3;
+        g->walls_left[target] -= amount;
+        if (g->walls_left[target] < 0) g->walls_left[target] = 0;
+        snprintf(msg, msg_cap, "Magic: %s lost %d walls.", g->player_name[target], amount);
+        return;
+    }
+    if (effect == 2) {
+        amount = (rand() % 2) + 1;
+        g->blocked_turns[target] += amount;
+        snprintf(msg, msg_cap, "Magic: %s blocked for %d turn(s).", g->player_name[target], amount);
+        return;
+    }
+    if (effect == 3) {
+        amount = (rand() % 2) ? 2 : 3;
+        g->walls_left[target] += amount;
+        snprintf(msg, msg_cap, "Magic: %s gained %d walls.", g->player_name[target], amount);
+        return;
+    }
+
+    amount = (rand() % 2) + 1;
+    if (g->walls_left[other] < amount) amount = g->walls_left[other];
+    g->walls_left[other] -= amount;
+    g->walls_left[target] += amount;
+    snprintf(msg, msg_cap, "Magic: %s stole %d wall(s) from %s.", g->player_name[target], amount, g->player_name[other]);
+}
+
+int game_try_ai_turn(Game *g, char *msg, size_t msg_cap) {
+    Pos moves[16];
+    int move_count;
+    int player = g->current_player;
+    int i;
+    char err[64];
+
+    if (!g) return 0;
+
+    move_count = game_list_moves(g, player, moves, 16);
+    if (move_count <= 0 && g->walls_left[player] <= 0) {
+        snprintf(msg, msg_cap, "Computer has no valid action.");
+        return 0;
+    }
+
+    if (g->walls_left[player] > 0 && (rand() % 100) < 35) {
+        for (i = 0; i < 250; i++) {
+            int row = rand() % (g->size - 1);
+            int col = rand() % (g->size - 1);
+            WallDir dir = (rand() % 2) ? DIR_H : DIR_V;
+            if (game_place_wall(g, player, row, col, dir, err, sizeof(err))) {
+                snprintf(msg, msg_cap, "Computer placed wall at (%d, %d) %c.", row, col, dir == DIR_H ? 'H' : 'V');
+                return 1;
             }
-
-            if (donor >= 0 && best > 0) {
-                int stolen = min_int(ev.amount, g->board.walls_left[donor]);
-                g->board.walls_left[donor] = clamp_nonnegative(g->board.walls_left[donor] - stolen);
-                g->board.walls_left[t] += stolen;
-            }
-            break;
         }
-        default:
-            break;
     }
-}
 
-/* تبدیل دستهٔ جادو به متن قابل چاپ */
-const char *magic_kind_name(MagicKind kind) {
-    switch (kind) {
-        case MAGIC_KIND_TALISMAN: return "talisman";
-        case MAGIC_KIND_REWARD: return "reward";
-        default: return "unknown";
+    if (move_count > 0) {
+        Pos choice = moves[rand() % move_count];
+        game_move_player(g, player, choice, err, sizeof(err));
+        snprintf(msg, msg_cap, "Computer moved to (%d, %d).", choice.row, choice.col);
+        return 1;
     }
-}
 
-/* تبدیل نوع جادو به متن قابل چاپ */
-const char *magic_type_name(MagicType type) {
-    switch (type) {
-        case MAGIC_CLEAR_WALLS: return "remove_all_walls";
-        case MAGIC_DEC_WALLS: return "decrease_walls";
-        case MAGIC_BLOCK_TURNS: return "block_turns";
-        case MAGIC_INC_WALLS: return "increase_walls";
-        case MAGIC_STEAL_WALLS: return "steal_walls";
-        default: return "unknown";
+    for (i = 0; i < 250; i++) {
+        int row = rand() % (g->size - 1);
+        int col = rand() % (g->size - 1);
+        WallDir dir = (rand() % 2) ? DIR_H : DIR_V;
+        if (game_place_wall(g, player, row, col, dir, err, sizeof(err))) {
+            snprintf(msg, msg_cap, "Computer placed wall at (%d, %d) %c.", row, col, dir == DIR_H ? 'H' : 'V');
+            return 1;
+        }
     }
-}
 
-static int rng_seeded = 0;
-
-/* seed کردن مولد تصادفی فقط یک‌بار در طول اجرا */
-void game_seed_rng(void) {
-    if (!rng_seeded) {
-        srand((unsigned int)time(NULL));
-        rng_seeded = 1;
-    }
+    snprintf(msg, msg_cap, "Computer has no valid action.");
+    return 0;
 }
