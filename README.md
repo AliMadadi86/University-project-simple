@@ -1,14 +1,13 @@
-# Simple Quoridor (for easier presentation)
+# University Project (Simple Version)
 
-This folder is a simpler version of the project.
-It does not change the original files.
+This repository contains a simplified C implementation of Quoridor for course presentation.
 
 ## Features kept
 - Phase 1 map render from text file
 - Two-player game rules (move + wall + path check)
 - PvC mode with simple random-valid AI
 - Binary save/load
-- Magic box effects each turn
+- Magic box effects each turn (4 effects)
 
 ## Features removed to stay simple
 - 4-player mode
@@ -17,17 +16,22 @@ It does not change the original files.
 
 ## Build (MSVC)
 ```bat
-cl /nologo /W4 /D_CRT_SECURE_NO_WARNINGS /std:c11 simple_version\main.c simple_version\game.c simple_version\io.c simple_version\save.c /Fe:simple_version\simple_main.exe
+build_simple_msvc.cmd
+```
+
+Manual build:
+```bat
+cl /nologo /W4 /D_CRT_SECURE_NO_WARNINGS /std:c11 main.c game.c io.c save.c /Fe:simple_main.exe
 ```
 
 ## Run
 ```bat
-simple_version\simple_main.exe
+simple_main.exe
 ```
 
 Map-only mode:
 ```bat
-simple_version\simple_main.exe simple_version\input.txt
+simple_main.exe input.txt
 ```
 
 ## Commands
