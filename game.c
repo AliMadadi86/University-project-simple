@@ -328,12 +328,14 @@ static void clear_all_walls(Game *g) {
 
 void game_apply_magic(Game *g, char *msg, size_t msg_cap) {
     int target;
+    int other;
     int effect;
     int amount;
     if (!g) return;
 
     target = rand() % PLAYER_COUNT;
-    effect = rand() % 4;
+    other = 1 - target;
+    effect = rand() % 5;
 
     if (effect == 0) {
         clear_all_walls(g);
@@ -359,6 +361,12 @@ void game_apply_magic(Game *g, char *msg, size_t msg_cap) {
         snprintf(msg, msg_cap, "Magic: %s gained %d walls.", g->player_name[target], amount);
         return;
     }
+
+    amount = (rand() % 2) + 1;
+    if (g->walls_left[other] < amount) amount = g->walls_left[other];
+    g->walls_left[other] -= amount;
+    g->walls_left[target] += amount;
+    snprintf(msg, msg_cap, "Magic: %s stole %d wall(s) from %s.", g->player_name[target], amount, g->player_name[other]);
 }
 
 int game_try_ai_turn(Game *g, char *msg, size_t msg_cap) {

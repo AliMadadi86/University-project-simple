@@ -7,7 +7,7 @@ This repository contains a simplified C implementation of Quoridor for course pr
 - Two-player game rules (move + wall + path check)
 - PvC mode with simple random-valid AI
 - Binary save/load
-- Magic box effects each turn (4 effects)
+- Magic box effects each turn (5 effects)
 
 ## Features removed to stay simple
 - 4-player mode
