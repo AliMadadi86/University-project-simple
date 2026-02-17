@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 
 #include "game.h"
 #include "io.h"
@@ -15,38 +14,6 @@ static int parse_wall_dir_char(char ch, WallDir *dir) {
         *dir = DIR_V;
         return 1;
     }
-    return 0;
-}
-
-static int parse_int_token(const char *s, int *out) {
-    char *end = NULL;
-    long v = strtol(s, &end, 10);
-    if (end == s || *end != '\0') return 0;
-    *out = (int)v;
-    return 1;
-}
-
-static int parse_wall_triplet(const char *t1, const char *t2, const char *t3, int *row, int *col, WallDir *dir) {
-    int r;
-    int c;
-    WallDir d;
-
-    if (parse_int_token(t1, &r) && parse_int_token(t2, &c) && t3[0] && t3[1] == '\0' &&
-        parse_wall_dir_char(t3[0], &d)) {
-        *row = r;
-        *col = c;
-        *dir = d;
-        return 1;
-    }
-
-    if (t1[0] && t1[1] == '\0' && parse_wall_dir_char(t1[0], &d) &&
-        parse_int_token(t2, &r) && parse_int_token(t3, &c)) {
-        *row = r;
-        *col = c;
-        *dir = d;
-        return 1;
-    }
-
     return 0;
 }
 
@@ -92,18 +59,16 @@ static int load_map_from_file(Game *g, const char *filename) {
         return 0;
     }
     for (i = 0; i < k1; i++) {
-        char t1[32];
-        char t2[32];
-        char t3[32];
         int row;
         int col;
+        char dir_char;
         WallDir dir;
-        if (fscanf(fp, "%31s %31s %31s", t1, t2, t3) != 3) {
+        if (fscanf(fp, "%d %d %c", &row, &col, &dir_char) != 3) {
             printf("Error: bad wall line for player1.\n");
             break;
         }
-        if (!parse_wall_triplet(t1, t2, t3, &row, &col, &dir) || !game_add_wall_from_map(g, row, col, dir)) {
-            printf("Error: invalid wall for player1 (%s %s %s)\n", t1, t2, t3);
+        if (!parse_wall_dir_char(dir_char, &dir) || !game_add_wall_from_map(g, row, col, dir)) {
+            printf("Error: invalid wall for player1 (%d %d %c)\n", row, col, dir_char);
         }
     }
 
@@ -113,18 +78,16 @@ static int load_map_from_file(Game *g, const char *filename) {
         return 0;
     }
     for (i = 0; i < k2; i++) {
-        char t1[32];
-        char t2[32];
-        char t3[32];
         int row;
         int col;
+        char dir_char;
         WallDir dir;
-        if (fscanf(fp, "%31s %31s %31s", t1, t2, t3) != 3) {
+        if (fscanf(fp, "%d %d %c", &row, &col, &dir_char) != 3) {
             printf("Error: bad wall line for player2.\n");
             break;
         }
-        if (!parse_wall_triplet(t1, t2, t3, &row, &col, &dir) || !game_add_wall_from_map(g, row, col, dir)) {
-            printf("Error: invalid wall for player2 (%s %s %s)\n", t1, t2, t3);
+        if (!parse_wall_dir_char(dir_char, &dir) || !game_add_wall_from_map(g, row, col, dir)) {
+            printf("Error: invalid wall for player2 (%d %d %c)\n", row, col, dir_char);
         }
     }
 
@@ -139,52 +102,6 @@ static void print_commands(void) {
     printf("  save [file]\n");
     printf("  load [file]\n");
     printf("  quit\n");
-}
-
-static void print_usage(const char *exe_name) {
-    printf("Usage:\n");
-    printf("  %s                Start interactive game\n", exe_name);
-    printf("  %s <map.txt>      Print map from file\n", exe_name);
-    printf("  %s --help         Show this help\n", exe_name);
-    printf("  %s --console      Accepted for compatibility (console is default)\n", exe_name);
-}
-
-typedef struct {
-    const char *map_file;
-    const char *bad_arg;
-    int show_help;
-    int has_bad_arg;
-} CliOptions;
-
-static CliOptions parse_cli(int argc, char **argv) {
-    CliOptions o;
-    int i;
-    o.map_file = NULL;
-    o.bad_arg = NULL;
-    o.show_help = 0;
-    o.has_bad_arg = 0;
-
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            o.show_help = 1;
-            continue;
-        }
-        if (strcmp(argv[i], "--console") == 0) {
-            continue;
-        }
-        if (argv[i][0] == '-') {
-            o.has_bad_arg = 1;
-            o.bad_arg = argv[i];
-            return o;
-        }
-        if (o.map_file) {
-            o.has_bad_arg = 1;
-            o.bad_arg = argv[i];
-            return o;
-        }
-        o.map_file = argv[i];
-    }
-    return o;
 }
 
 static void setup_new_game(Game *g) {
@@ -331,23 +248,11 @@ static int run_game_loop(Game *g) {
 
 int main(int argc, char **argv) {
     Game game;
-    CliOptions cli = parse_cli(argc, argv);
 
     game_seed_rng();
 
-    if (cli.show_help) {
-        print_usage(argv[0]);
-        return 0;
-    }
-
-    if (cli.has_bad_arg) {
-        printf("Error: unknown argument: %s\n", cli.bad_arg ? cli.bad_arg : "(null)");
-        print_usage(argv[0]);
-        return 1;
-    }
-
-    if (cli.map_file) {
-        if (!load_map_from_file(&game, cli.map_file)) return 1;
+    if (argc >= 2) {
+        if (!load_map_from_file(&game, argv[1])) return 1;
         io_print_board(&game);
         return 0;
     }

@@ -1,40 +1,33 @@
-# University Project (Simple Version)
+# Simple Quoridor (for easier presentation)
 
-This repository contains only files from the `simple_version` folder.
+This folder is a simpler version of the project.
+It does not change the original files.
 
-## Project Info
-- Instructor: Dr. Mostafa Nouri Baygi (Aghaye Nouri)
-- Student/Presenter: Sina Ziaei (???? ?????)
+## Features kept
+- Phase 1 map render from text file
+- Two-player game rules (move + wall + path check)
+- PvC mode with simple random-valid AI
+- Binary save/load
+- Magic box effects each turn
 
-## Included Files
-- `main.c`
-- `game.c`
-- `game.h`
-- `io.c`
-- `io.h`
-- `save.c`
-- `save.h`
-- `input.txt`
-- `build_simple_msvc.cmd`
+## Features removed to stay simple
+- 4-player mode
+- Advanced AI scoring logic
+- Multi-version/complex save format
 
 ## Build (MSVC)
 ```bat
-build_simple_msvc.cmd
+cl /nologo /W4 /D_CRT_SECURE_NO_WARNINGS /std:c11 simple_version\main.c simple_version\game.c simple_version\io.c simple_version\save.c /Fe:simple_version\simple_main.exe
 ```
 
 ## Run
 ```bat
-simple_main.exe
+simple_version\simple_main.exe
 ```
 
-Map mode:
+Map-only mode:
 ```bat
-simple_main.exe input.txt
-```
-
-Help:
-```bat
-simple_main.exe --help
+simple_version\simple_main.exe simple_version\input.txt
 ```
 
 ## Commands
